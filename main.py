@@ -36,7 +36,7 @@ def run(args):
 	assignment = model.run(instances, SNPMat)
 	model.evaluate(SNPMat, assignment)
 
-	assignment = model.refine(SNPMat, assignment, negGraph, args.n_colors)
+	assignment = model.refine_parallel(SNPMat, assignment, negGraph, 15)
 	model.evaluate(SNPMat, assignment)
 
 

@@ -10,6 +10,8 @@ from torch.autograd import Variable
 from torch.nn import functional as F
 from loader import recon_haplotype,MEC
 from utils import get_device_id,CSInstance
+from joblib import Parallel, delayed
+import gc
 
 
 class Modeling:
@@ -97,6 +99,61 @@ class Modeling:
 								best_mec  = mec
 								TAG = True
 								# print('New MEC score:', best_mec)
+		return _ASSIGNMENT
+	
+	def refine_worker(self, SNPMat, assignment, neighbors, colors, nodes, best_mec):
+		found_better = False
+		for node in nodes:
+			colorNode = assignment[node]
+			node_neighbors = neighbors[node]
+			neigColors = set([assignment[v] for v in node_neighbors])
+			_colors = list(colors - neigColors)
+			if len(_colors) > 0:
+				for i in range(len(_colors)):
+					if _colors[i] != colorNode:
+						_tmp_assign = assignment.copy()
+						_tmp_assign[node] = _colors[i]
+						pred_haplotypes = recon_haplotype(_tmp_assign, SNPMat, self.args.n_colors)
+						mec = MEC(SNPMat, pred_haplotypes)
+						if mec < best_mec:
+							assignment = _tmp_assign
+							best_mec = mec
+							found_better = True
+		if found_better:
+			return assignment, best_mec
+		return None
+	
+	def refine_parallel(self, SNPMat, assignment, negGraph, num_workers):
+		# free the memory from the model
+		self.model.cpu()
+		del self.model
+		gc.collect()
+		torch.cuda.empty_cache()
+
+		TAG = True
+		COLORS = set(range(self.args.n_colors))
+		n_nodes = assignment.shape[0]
+		NODES = negGraph.nodes()
+		NEIGHBORS = dict()
+		for val in range(n_nodes):
+			neighbor = list(negGraph.neighbors(val))
+			NEIGHBORS[val] = neighbor
+
+		pred_haplotypes = recon_haplotype(assignment, SNPMat, self.args.n_colors)
+		best_mec = MEC(SNPMat, pred_haplotypes)
+		_ASSIGNMENT = assignment.copy()
+
+		group_size = int(n_nodes/num_workers)
+		nodes_split = [[j for j in range(i, i+group_size if i +group_size < n_nodes else n_nodes)] for i in range(0,n_nodes,group_size)]
+
+		while TAG==True:
+			TAG = False
+			workers_assigns = Parallel(n_jobs=num_workers)(delayed(self.refine_worker)(SNPMat, _ASSIGNMENT, NEIGHBORS, COLORS, nodes_worker, best_mec) for nodes_worker in nodes_split)
+			for result in workers_assigns:
+				if (result is not None) and (result[1] < best_mec):
+					TAG = True
+					best_mec = result[1]
+					_ASSIGNMENT = result[0]
 		return _ASSIGNMENT
 
 class NeuralModel(nn.Module):
